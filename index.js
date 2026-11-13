@@ -1,8 +1,8 @@
 /**
  * widespread-bot — the forge-native surface on GitHub.
- * @widespread $N for <spec>  → labels + spec comment + escrow link
- * merge of a PR with `closes #N`  → merge=accept → triggers bridge review → payout
- * receipt writeback → the payout lands in the PR's own thread permanently.
+ * @widespread $N for <spec>  → labels + spec comment + NEAR escrow link
+ * merge of a PR with `closes #N`  → merge=accept → bridge review → oracle-signed release
+ * receipt writeback → the settlement lands in the PR's own thread permanently.
  */
 const BRIDGE = process.env.WIDE_BRIDGE || "https://widespread-bridge.widespread.workers.dev";
 const FORGE = process.env.WIDE_FORGE || "https://code.widespread.fyi";
@@ -12,7 +12,7 @@ const seen = new Set(); // `${repo}#${issue}:${bot}:${sha}` — one verdict per 
 module.exports = (app) => {
   app.log.info("widespread-bot up");
 
-  /** PR → linked wide:funded issue → {issueNum, amount, paypal}. */
+  /** PR → linked wide:funded issue → {issueNum, amount, claimant}. */
   async function fundedIssue(ctx, prBody) {
     const ref = (prBody || "").match(/(?:closes|fixes|resolves)\s+#(\d+)/i);
     if (!ref) return null;
@@ -21,13 +21,14 @@ module.exports = (app) => {
     const funded = (issue?.data?.labels ?? []).find((l) => /wide:funded/i.test(l.name || ""));
     if (!funded) return null;
     const amount = ((funded.name || "").match(/\$?([\d.]+)/) || [])[1] ?? "1.00";
-    // payout binding: paypal:/payout: email in issue body or the market comment
-    let paypal = (issue.data.body || "").match(/(?:paypal|payout):\s*(\S+@\S+)/i)?.[1] ?? "";
-    if (!paypal) {
+    // payout binding: claimant:/near: NEAR account in issue body or the market comment
+    const acct = /(?:claimant|near|payout):\s*([\w.-]+\.(?:testnet|near|tg|sweat|kaiching))/i;
+    let claimant = (issue.data.body || "").match(acct)?.[1] ?? "";
+    if (!claimant) {
       const comments = await ctx.octokit.issues.listComments({ ...ctx.issue(), issue_number: issueNum, per_page: 10 }).catch(() => ({ data: [] }));
-      paypal = (comments.data.map((c) => c.body || "").join("\n").match(/(?:paypal|payout):\s*(\S+@\S+)/i) || [])[1] ?? "";
+      claimant = (comments.data.map((c) => c.body || "").join("\n").match(acct) || [])[1] ?? "";
     }
-    return { issueNum, amount, paypal };
+    return { issueNum, amount, claimant };
   }
 
   /** A parsed verdict on a funded PR → signed oracle verdict + payout. */
@@ -41,7 +42,7 @@ module.exports = (app) => {
       body: JSON.stringify({
         repo, pr: pr.number, issue: market.issueNum,
         bot: verdict.bot, score: verdict.score, verdict: verdict.verdict,
-        head_sha: pr.head?.sha ?? "", amount: market.amount, paypal_email: market.paypal || undefined,
+        head_sha: pr.head?.sha ?? "", amount: market.amount, claimant: market.claimant || undefined,
       }),
     }).catch((e) => ({ ok: false, json: async () => ({ error: String(e) }) }));
     const out = await res.json().catch(() => ({}));
@@ -98,8 +99,8 @@ module.exports = (app) => {
     const m = body.match(/@widespread\s+\$?([\d.]+)\s+(?:for\s+)?([\s\S]+)/i);
     if (!m) return false;
     const [_, amount, specRaw] = m;
-    const paypal = (specRaw.match(/paypal:\s*(\S+@\S+)/i) || [])[1] ?? "";
-    const spec = specRaw.replace(/\s*paypal:\s*\S+@\S+/i, "").trim();
+    const claimant = (specRaw.match(/(?:claimant|near):\s*([\w.-]+\.(?:testnet|near|tg|sweat|kaiching))/i) || [])[1] ?? "";
+    const spec = specRaw.replace(/\s*(?:claimant|near):\s*[\w.-]+\.(?:testnet|near|tg|sweat|kaiching)/i, "").trim();
     const repo = `${ctx.payload.repository.owner.login}/${ctx.payload.repository.name}`;
     // labels + spec comment = the forge-native market record.
     // `wide:funded` (canonical) enables global label search for the feed poll.
@@ -108,7 +109,7 @@ module.exports = (app) => {
     await ctx.octokit.issues.createComment({ ...ctx.issue(), issue_number: issue.number,
       body: `@widespread market — **$${amount}** for \`${spec.slice(0, 140)}\`\n` +
             `market_id: \`${repo}#${issue.number}\` · specHash pinned · escrow → ${BRIDGE}/api/markets` +
-            (paypal ? `\npayout: ${paypal}` : "") });
+            (claimant ? `\nclaimant: \`${claimant}\` — release pays it on-chain` : "") });
     // push-index into the unified feed — agents discover this within seconds
     await fetch(`${BRIDGE}/api/feed/index`, {
       method: "POST", headers: { "content-type": "application/json" },

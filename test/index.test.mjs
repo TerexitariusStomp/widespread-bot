@@ -72,15 +72,15 @@ const FUNDED = [{ name: "wide:funded:$25" }, { name: "wide:funded" }];
 // --- tests -----------------------------------------------------------------
 
 test("issue_comment '@widespread $25 for spec' seeds labels, comment, feed", async () => {
-  const ctx = issueCtx({ body: "@widespread $25 for fix the flaky test paypal: pay@x.com" });
+  const ctx = issueCtx({ body: "@widespread $25 for fix the flaky test claimant: worker.testnet" });
   await handlers.get("issue_comment.created")(ctx);
   assert.deepEqual(calls.labels[0], ["wide:funded:$25", "wide:funded"]);
   assert.match(calls.comments[0], /\$25.*flaky test/);
-  assert.match(calls.comments[0], /pay@x\.com/);
+  assert.match(calls.comments[0], /worker\.testnet/);
   const idx = calls.fetch.find((f) => f.url.endsWith("/api/feed/index"));
   assert.ok(idx, "feed index push fired");
   assert.equal(idx.body.amount, "25");
-  assert.equal(idx.body.spec, "fix the flaky test"); // paypal stripped
+  assert.equal(idx.body.spec, "fix the flaky test"); // claimant stripped
 });
 
 test("issue body grammar seeds on issues.opened", async () => {
